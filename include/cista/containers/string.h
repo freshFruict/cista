@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "cista/containers/ptr.h"
+#include "cista/endian/detection.h"
 #include "cista/exception.h"
 #include "cista/type_traits.h"
 
@@ -74,10 +75,21 @@ struct generic_string {
   friend CharT const* end(generic_string const& s) { return s.end(); }
   friend CharT* end(generic_string& s) { return s.end(); }
 
-  bool is_short() const noexcept { return s_.is_short_; }
+  bool is_short() const noexcept { return s_.flags_ & MASK_FLAG_SHORT; }
+  bool is_self_allocated() const noexcept {
+    return s_.flags_ & MASK_FLAG_SELF_ALLOCATED;
+  }
+  void set_flag_short(bool s) noexcept {
+    s_.flags_ =
+        s ? (s_.flags_ | MASK_FLAG_SHORT) : (s_.flags_ & ~MASK_FLAG_SHORT);
+  }
+  void set_flag_self_allocated(bool s) noexcept {
+    s_.flags_ = s ? (s_.flags_ | MASK_FLAG_SELF_ALLOCATED)
+                  : (s_.flags_ & ~MASK_FLAG_SELF_ALLOCATED);
+  }
 
   void reset() noexcept {
-    if (!h_.is_short_ && h_.ptr_ != nullptr && h_.self_allocated_) {
+    if (!is_short() && h_.ptr_ != nullptr && is_self_allocated()) {
       std::free(data());
     }
     h_ = heap{};
@@ -100,8 +112,8 @@ struct generic_string {
     if (str == nullptr || len == 0U) {
       return;
     }
-    s_.is_short_ = (len <= short_length_limit);
-    if (s_.is_short_) {
+    set_flag_short(len <= short_length_limit);
+    if (is_short()) {
       std::memcpy(s_.s_, str, len * sizeof(CharT));
       for (auto i = len; i < short_length_limit; ++i) {
         s_.s_[i] = 0;
@@ -112,7 +124,7 @@ struct generic_string {
         throw_exception(std::bad_alloc{});
       }
       h_.size_ = len;
-      h_.self_allocated_ = true;
+      set_flag_self_allocated(true);
       std::memcpy(data(), str, len * sizeof(CharT));
     }
   }
@@ -137,8 +149,7 @@ struct generic_string {
       return set_owning(str, len);
     }
 
-    h_.is_short_ = false;
-    h_.self_allocated_ = false;
+    h_.flags_ = 0;
     h_.ptr_ = str;
     h_.size_ = len;
   }
@@ -167,7 +178,7 @@ struct generic_string {
     reset();
     if (s.is_short()) {
       std::memcpy(static_cast<void*>(this), &s, sizeof(s));
-    } else if (s.h_.self_allocated_) {
+    } else if (s.is_self_allocated()) {
       set_owning(s.data(), s.size());
     } else {
       set_non_owning(s.data(), s.size());
@@ -352,7 +363,7 @@ struct generic_string {
   }
 
   generic_string& erase(msize_t const pos, msize_t const n) {
-    if (!is_short() && !h_.self_allocated_) {
+    if (!is_short() && !is_self_allocated()) {
       set_owning(view());
     }
     auto const size_before = size();
@@ -423,17 +434,26 @@ struct generic_string {
     return data()[size() - 1] == ch;
   }
 
+  std::uint8_t static constexpr MASK_FLAG_SHORT = 0x01;
+  std::uint8_t static constexpr MASK_FLAG_SELF_ALLOCATED = 0x02;
+#ifdef CISTA_BIG_ENDIAN
+  std::uint32_t static constexpr MASK_RESERVED = 0xFF'FF'FF'FC;
+#else
+  std::uint32_t static constexpr MASK_RESERVED = 0xFC'FF'FF'FF;
+#endif
+
   struct heap {
-    bool is_short_{false};
-    bool self_allocated_{false};
-    std::uint16_t __fill__{0};
+    union {
+      std::uint8_t flags_;
+      std::uint32_t reserved_{0};
+    };
     std::uint32_t size_{0};
     Ptr ptr_{nullptr};
   };
 
   struct stack {
     union {
-      bool is_short_{true};
+      std::uint8_t flags_{MASK_FLAG_SHORT};
       CharT __fill__;
     };
     CharT s_[short_length_limit]{0};

@@ -260,7 +260,12 @@ void serialize(Ctx& c, generic_string<Ptr> const* origin, offset_t const pos) {
                   : start - cista_member_offset(Type, h_.ptr_) - pos));
   c.write(pos + cista_member_offset(Type, h_.size_),
           convert_endian<Ctx::MODE>(origin->h_.size_));
-  c.write(pos + cista_member_offset(Type, h_.self_allocated_), false);
+  // Compatibility Note: In previous versions of Cista, the memory used for
+  // `reserved_` stored the `short_` and `self_allocated_` flags as two separate
+  // bools. Older versions expect this memory region, except for the `short_`
+  // flag, to be set to zero.
+  c.write(pos + cista_member_offset(Type, h_.reserved_), 0);
+  c.write(pos + cista_member_offset(Type, h_.flags_), origin->is_short());
 }
 
 template <typename Ctx, typename T, typename SizeType,
@@ -841,7 +846,7 @@ void recurse(Ctx&, basic_vector<T, Ptr, Indexed, TemplateSizeType>* el,
 // --- STRING ---
 template <typename Ctx, typename Ptr>
 void convert_endian_and_ptr(Ctx const& c, generic_string<Ptr>* el) {
-  if (*reinterpret_cast<std::uint8_t const*>(&el->s_.is_short_) == 0U) {
+  if (*reinterpret_cast<std::uint8_t const*>(&el->s_.flags_) == 0U) {
     deserialize(c, &el->h_.ptr_);
     c.convert_endian(el->h_.size_);
   }
@@ -849,12 +854,11 @@ void convert_endian_and_ptr(Ctx const& c, generic_string<Ptr>* el) {
 
 template <typename Ctx, typename Ptr>
 void check_state(Ctx const& c, generic_string<Ptr>* el) {
-  c.check_bool(el->s_.is_short_);
+  c.check_bool(el->s_.flags_);
   if (!el->is_short()) {
     c.check_ptr(el->h_.ptr_,
                 el->h_.size_ * sizeof(typename generic_string<Ptr>::CharT));
-    c.check_bool(el->h_.self_allocated_);
-    c.require(!el->h_.self_allocated_, "string self-allocated");
+    c.require(!el->is_self_allocated(), "string self-allocated");
     c.require((el->h_.size_ == 0) == (el->h_.ptr_ == nullptr),
               "str size=0 <=> ptr=0");
   }
